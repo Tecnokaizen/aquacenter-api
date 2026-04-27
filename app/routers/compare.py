@@ -94,6 +94,86 @@ async def compare_ui_submit(
         )
 
 
+@router.get("/ui/batch", response_class=HTMLResponse)
+async def compare_batch_ui() -> HTMLResponse:
+    return HTMLResponse(_render_batch_page())
+
+
+@router.post("/ui/batch", response_class=HTMLResponse)
+async def compare_batch_ui_submit(
+    files: list[UploadFile] = File(...),
+    module: str = Form("confirmacion_pedidos"),
+    use_ai: bool = Form(False),
+) -> HTMLResponse:
+    try:
+        _assert_module(module)
+        if not files:
+            raise HTTPException(status_code=400, detail="Debes subir al menos un PDF.")
+
+        batch_id = f"batch_{uuid.uuid4().hex[:10]}"
+        input_documents: list[BatchInputDocument] = []
+        for i, file in enumerate(files, start=1):
+            stored_path = await _store_pdf_upload(
+                upload=file,
+                job_prefix=batch_id,
+                role=f"doc_{i:03d}",
+                field_name=f"files[{i - 1}]",
+            )
+            input_documents.append(
+                BatchInputDocument(
+                    filename=file.filename or f"document_{i:03d}.pdf",
+                    path=str(stored_path),
+                )
+            )
+
+        timeout_seconds = max(settings.request_timeout_seconds, settings.request_timeout_seconds * len(input_documents))
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_compare_batch_mvp,
+                batch_id=batch_id,
+                module=module,
+                use_ai=use_ai,
+                input_documents=input_documents,
+                output_dir=settings.outputs_dir,
+            ),
+            timeout=timeout_seconds,
+        )
+        batch_excel_href = ensure_relative_path(str(payload.get("batch_excel") or ""))
+        return HTMLResponse(
+            _render_batch_page(
+                result=payload,
+                batch_excel_href=batch_excel_href,
+                overall_status=_batch_overall_status(payload),
+                use_ai=use_ai,
+            )
+        )
+    except HTTPException as exc:
+        return HTMLResponse(
+            _render_batch_page(
+                error=_extract_http_error_message(exc.detail),
+                overall_status="failed",
+                use_ai=use_ai,
+            ),
+            status_code=exc.status_code,
+        )
+    except OpenAINotConfiguredError as exc:
+        return HTMLResponse(
+            _render_batch_page(error=str(exc), overall_status="failed", use_ai=use_ai),
+            status_code=503,
+        )
+    except asyncio.TimeoutError:
+        return HTMLResponse(
+            _render_batch_page(error="Timeout procesando lote.", overall_status="failed", use_ai=use_ai),
+            status_code=503,
+        )
+    except Exception:
+        logger.exception("ui_batch_unhandled_error")
+        return HTMLResponse(
+            _render_batch_page(error="Error interno procesando lote.", overall_status="failed", use_ai=use_ai),
+            status_code=500,
+        )
+
+
 @router.post("/compare")
 async def compare(
     request: Request,
@@ -417,6 +497,149 @@ def _render_compare_page(
         </label>
         <label class="row"><input type="checkbox" name="use_ai" value="true" {checked}> Usar fallback IA</label>
         <button type="submit">Comparar</button>
+      </form>
+    </section>
+    {result_html}
+  </main>
+</body>
+</html>"""
+
+
+def _batch_overall_status(result: dict | None) -> str:
+    if not result:
+        return "failed"
+    with_incidents = int(result.get("comparisons_with_incidents", 0) or 0)
+    unmatched = len(result.get("unmatched_documents") or [])
+    if with_incidents > 0 or unmatched > 0:
+        return "with_incidents"
+    return "ok"
+
+
+def _render_batch_page(
+    *,
+    result: dict | None = None,
+    error: str | None = None,
+    batch_excel_href: str = "",
+    overall_status: str = "",
+    use_ai: bool = False,
+) -> str:
+    checked = "checked" if use_ai else ""
+    result_html = ""
+    if result:
+        pairs = result.get("pairs") or []
+        rows_html = []
+        for pair in pairs:
+            excel_href = ensure_relative_path(str(pair.get("output_excel") or ""))
+            rows_html.append(
+                f"""
+                <tr>
+                  <td>{html.escape(str(pair.get("origin_file") or "-"))}</td>
+                  <td>{html.escape(str(pair.get("target_file") or "-"))}</td>
+                  <td>{html.escape(str(pair.get("supplier") or "-"))}</td>
+                  <td>{pair.get("lines_origin", 0)}</td>
+                  <td>{pair.get("lines_target", 0)}</td>
+                  <td>{pair.get("lines_ok", 0)}</td>
+                  <td>{pair.get("incidents_total", 0)}</td>
+                  <td>{html.escape(str(pair.get("overall_status") or "-"))}</td>
+                  <td><a href="{html.escape(excel_href)}" target="_blank" rel="noopener">Descargar</a></td>
+                </tr>
+                """
+            )
+        table_html = (
+            """
+            <table>
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Confirmación</th>
+                  <th>Proveedor</th>
+                  <th>Líneas origen</th>
+                  <th>Líneas destino</th>
+                  <th>Líneas OK</th>
+                  <th>Incidencias</th>
+                  <th>Estado</th>
+                  <th>Excel</th>
+                </tr>
+              </thead>
+              <tbody>
+            """
+            + "".join(rows_html)
+            + """
+              </tbody>
+            </table>
+            """
+        )
+        result_html = f"""
+        <section class="card ok">
+          <h2>Resumen de lote</h2>
+          <ul>
+            <li><strong>Documentos procesados:</strong> {result.get("documents_total", 0)}</li>
+            <li><strong>Parejas detectadas:</strong> {result.get("pairs_detected", 0)}</li>
+            <li><strong>Comparaciones OK:</strong> {result.get("comparisons_ok", 0)}</li>
+            <li><strong>Comparaciones con incidencias:</strong> {result.get("comparisons_with_incidents", 0)}</li>
+            <li><strong>Documentos no emparejados:</strong> {len(result.get("unmatched_documents") or [])}</li>
+            <li><strong>Incidencias totales:</strong> {result.get("incidents_total", 0)}</li>
+            <li><strong>Estado global del lote:</strong> {html.escape(overall_status or _batch_overall_status(result))}</li>
+          </ul>
+          <p><a href="{html.escape(batch_excel_href)}" target="_blank" rel="noopener">Descargar Excel global</a></p>
+        </section>
+        <section class="card">
+          <h2>Parejas detectadas</h2>
+          {table_html}
+        </section>
+        """
+    if error:
+        result_html = f"""
+        <section class="card error">
+          <h2>Error</h2>
+          <p>{html.escape(error)}</p>
+        </section>
+        """
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aquacenter Batch UI</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #f4f7fb; margin: 0; padding: 24px; color: #0f172a; }}
+    .wrap {{ max-width: 1200px; margin: 0 auto; }}
+    .card {{ background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); margin-bottom: 16px; }}
+    .ok {{ border-left: 6px solid #15803d; }}
+    .error {{ border-left: 6px solid #b91c1c; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    form {{ display: grid; gap: 12px; }}
+    label {{ display: grid; gap: 6px; font-weight: 600; }}
+    input[type=file], select {{ padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }}
+    .row {{ display: flex; gap: 10px; align-items: center; }}
+    button {{ border: 0; background: #0f4c81; color: #fff; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; }}
+    ul {{ margin: 0; padding-left: 18px; }}
+    a {{ color: #0b65c2; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border: 1px solid #e2e8f0; padding: 8px; text-align: left; font-size: 14px; }}
+    th {{ background: #f8fafc; font-weight: 700; }}
+    .toolbar {{ display: flex; gap: 12px; margin-bottom: 12px; }}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="toolbar">
+      <a href="/ui/compare">Ir a comparación manual</a>
+    </div>
+    <section class="card">
+      <h1>Comparación masiva de PDFs</h1>
+      <form action="/ui/batch" method="post" enctype="multipart/form-data">
+        <label>Subir múltiples PDFs
+          <input type="file" name="files" accept="application/pdf,.pdf" multiple required>
+        </label>
+        <label>Módulo
+          <select name="module">
+            <option value="confirmacion_pedidos">confirmacion_pedidos</option>
+          </select>
+        </label>
+        <label class="row"><input type="checkbox" name="use_ai" value="true" {checked}> Usar fallback IA</label>
+        <button type="submit">Procesar lote</button>
       </form>
     </section>
     {result_html}

@@ -21,6 +21,7 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
   - `module`: `confirmacion_pedidos`
   - `use_ai`: `true/false`
 - `GET /ui/compare` interfaz web mínima para comparación manual
+- `GET /ui/batch` interfaz web mínima para comparación masiva manual
 - `GET /outputs/{file_name}` descarga Excel de salida
 
 ## Seguridad
