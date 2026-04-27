@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+pandas
+openpyxl
+pdfplumber
+pymupdf
+python-dotenv
+email-validator
+beautifulsoup4
+lxml
+requests
+openai
