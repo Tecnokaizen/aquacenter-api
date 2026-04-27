@@ -40,6 +40,7 @@ Nota de compatibilidad n8n:
 ```env
 APP_ENV=production
 API_KEY=clave-larga-segura
+PUBLIC_BASE_URL=https://aquacenter-mvp-api-aquacenter.rb0pxk.easypanel.host
 MAX_UPLOAD_MB=50
 DATA_DIR=/app/data
 UPLOADS_DIR=/app/data/uploads
@@ -122,3 +123,8 @@ Para `/compare-batch` la respuesta incluye:
 - `incidents_total`
 - `batch_excel`
 - `batch_excel_url`
+
+Construcción de URLs:
+- Si `PUBLIC_BASE_URL` existe, se usa para `output_excel_url` y `batch_excel_url`.
+- Si no existe, la API usa `X-Forwarded-Proto`/`X-Forwarded-Host` cuando están presentes.
+- La UI `/ui/compare` usa enlace relativo `/outputs/...` para evitar mixed content en HTTPS.

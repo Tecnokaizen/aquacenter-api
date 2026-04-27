@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 
 from app.core.config import settings
 from app.core.security import require_bearer_auth
+from app.core.url_builder import build_public_url, ensure_relative_path
 from app.services.compare_batch_mvp import BatchInputDocument, run_compare_batch_mvp
 from app.services.compare_runtime import run_compare_pair
 from app.services.pdf_extractor import OpenAINotConfiguredError
@@ -29,7 +30,6 @@ async def compare_ui() -> HTMLResponse:
 
 @router.post("/ui/compare", response_class=HTMLResponse)
 async def compare_ui_submit(
-    request: Request,
     origin_file: UploadFile = File(...),
     target_file: UploadFile = File(...),
     module: str = Form("confirmacion_pedidos"),
@@ -66,13 +66,8 @@ async def compare_ui_submit(
         if warnings:
             payload["warnings"] = warnings
 
-        output_excel = payload.get("output_excel")
-        output_excel_url = ""
-        if isinstance(output_excel, str):
-            output_excel_url = str(request.base_url).rstrip("/") + output_excel
-            payload["output_excel_url"] = output_excel_url
-
-        return HTMLResponse(_render_compare_page(result=payload, output_excel_url=output_excel_url, use_ai=use_ai))
+        output_excel_href = ensure_relative_path(str(payload.get("output_excel") or ""))
+        return HTMLResponse(_render_compare_page(result=payload, output_excel_href=output_excel_href, use_ai=use_ai))
     except HTTPException as exc:
         return HTMLResponse(
             _render_compare_page(
@@ -172,7 +167,7 @@ async def compare(
         payload["warnings"] = warnings
     output_excel = payload.get("output_excel")
     if isinstance(output_excel, str):
-        payload["output_excel_url"] = str(request.base_url).rstrip("/") + output_excel
+        payload["output_excel_url"] = build_public_url(request, output_excel)
 
     _log(
         "compare_completed",
@@ -251,11 +246,15 @@ async def compare_batch(
             detail={"overall_status": "failed", "message": "Error interno procesando lote."},
         ) from exc
 
-    payload["batch_excel_url"] = str(request.base_url).rstrip("/") + str(payload.get("batch_excel", ""))
+    batch_excel = payload.get("batch_excel")
+    if isinstance(batch_excel, str):
+        payload["batch_excel_url"] = build_public_url(request, batch_excel)
+    else:
+        payload["batch_excel_url"] = ""
     for pair in payload.get("pairs") or []:
         output_excel = pair.get("output_excel")
         if isinstance(output_excel, str):
-            pair["output_excel_url"] = str(request.base_url).rstrip("/") + output_excel
+            pair["output_excel_url"] = build_public_url(request, output_excel)
 
     _log(
         "compare_batch_completed",
@@ -349,7 +348,7 @@ def _render_compare_page(
     *,
     result: dict | None = None,
     error: str | None = None,
-    output_excel_url: str = "",
+    output_excel_href: str = "",
     use_ai: bool = False,
 ) -> str:
     checked = "checked" if use_ai else ""
@@ -367,7 +366,7 @@ def _render_compare_page(
             <li><strong>Incidencias:</strong> {result.get("incidents_total", 0)}</li>
             <li><strong>Estado global:</strong> {html.escape(str(result.get("overall_status", "-")))}</li>
           </ul>
-          <p><a href="{html.escape(output_excel_url)}" target="_blank" rel="noopener">Descargar Excel</a></p>
+          <p><a href="{html.escape(output_excel_href)}" target="_blank" rel="noopener">Descargar Excel</a></p>
         </section>
         """
     if error:

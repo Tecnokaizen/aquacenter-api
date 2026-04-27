@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "aquacenter-api"
     app_version: str = "0.1.0"
+    public_base_url: str | None = None
 
     api_key: str = ""
     max_upload_mb: int = 50

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.core.security import require_bearer_auth
+from app.core.url_builder import build_public_url
 from app.services.email_extractor import extract_email_document
 from app.services.excel_extractor import extract_table_document
 from app.services.excel_reporter import exportar_excel_extraccion
@@ -95,7 +96,7 @@ async def extract(
         data["cabecera"]["proveedor_nombre"] = supplier
     lines_count = len(data.get("lineas", []) or [])
     output_excel_rel = f"/outputs/{output_name}"
-    output_excel_url = str(request.base_url).rstrip("/") + output_excel_rel
+    output_excel_url = build_public_url(request, output_excel_rel)
 
     _log(
         "extract_completed",
