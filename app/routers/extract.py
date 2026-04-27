@@ -44,9 +44,6 @@ async def extract(
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(status_code=400, detail=f"Extensión no soportada: {suffix}")
-    if suffix == ".pdf":
-        _assert_pdf_content_type(file)
-
     max_bytes = settings.max_upload_mb * 1024 * 1024
     content = await file.read()
     if not content:
@@ -55,6 +52,13 @@ async def extract(
         raise HTTPException(
             status_code=400,
             detail=f"Archivo demasiado grande. Máximo: {settings.max_upload_mb} MB.",
+        )
+    if suffix == ".pdf":
+        _assert_pdf_upload(
+            filename=file.filename or "",
+            content_type=file.content_type,
+            content=content,
+            field_name="file",
         )
 
     upload_path = Path(settings.uploads_dir) / f"{job_id}_{_safe_name(file.filename or 'input')}"
@@ -142,16 +146,33 @@ def _assert_module(module: str) -> None:
         )
 
 
-def _assert_pdf_content_type(file: UploadFile) -> None:
-    content_type = (file.content_type or "").split(";")[0].lower().strip()
-    if content_type not in {"application/pdf", "application/x-pdf"}:
+def _assert_pdf_upload(
+    *,
+    filename: str,
+    content_type: str | None,
+    content: bytes,
+    field_name: str,
+) -> None:
+    normalized_type = (content_type or "").split(";")[0].lower().strip()
+    filename_lower = filename.lower()
+    allowed_pdf_mime = {"application/pdf", "application/x-pdf"}
+    relaxed_mime = {"application/octet-stream", "binary/octet-stream", ""}
+
+    mime_ok = normalized_type in allowed_pdf_mime or (
+        normalized_type in relaxed_mime and filename_lower.endswith(".pdf")
+    )
+    if not mime_ok:
         raise HTTPException(
             status_code=400,
             detail=(
-                "El fichero PDF debe enviarse con content-type application/pdf, "
-                f"recibido: {content_type or '(vacío)'}"
+                f"{field_name} debe ser PDF. content-type recibido: "
+                f"{normalized_type or '(vacío)'}"
             ),
         )
+
+    # Validación rápida de cabecera para evitar binarios no PDF con extensión .pdf
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=422, detail=f"{field_name} no parece un PDF válido.")
 
 
 def _safe_name(name: str) -> str:

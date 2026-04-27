@@ -92,12 +92,18 @@ def compare_documents_mvp(
             )
 
             if mismatch_fields:
+                business_message = _build_business_message(
+                    supplier_code=code,
+                    mismatch_fields=mismatch_fields,
+                    origin_line=origin_line,
+                    target_line=target_line,
+                )
                 incidents.append(
                     _incident(
                         "VALUE_MISMATCH",
                         origin_line,
                         target_line,
-                        "Diferencias en: " + ", ".join(x["field"] for x in mismatch_fields),
+                        business_message,
                         mismatch_fields,
                     )
                 )
@@ -114,6 +120,8 @@ def compare_documents_mvp(
                 unmatched_rows.append(_unmatched_row("target", "NO_MATCH_ORIGIN", extra))
                 incidents.append(_incident("NO_MATCH_ORIGIN", None, extra, "Línea destino sin match en origen"))
 
+    overall_status = "ok" if not incidents else "with_incidents"
+
     output_file = f"{job_id}.xlsx"
     output_path = Path(output_dir) / output_file
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,10 +137,12 @@ def compare_documents_mvp(
         ok_rows=ok_rows,
         incidents=incidents,
         unmatched_rows=unmatched_rows,
+        overall_status=overall_status,
     )
 
     return {
         "success": True,
+        "overall_status": overall_status,
         "job_id": job_id,
         "origin_document_type": origin_type,
         "target_document_type": target_type,
@@ -211,6 +221,65 @@ def _unmatched_row(side: str, reason: str, line: dict[str, Any]) -> dict[str, An
     return {"side": side, "reason": reason, "line": line}
 
 
+def _build_business_message(
+    *,
+    supplier_code: str,
+    mismatch_fields: list[dict[str, Any]],
+    origin_line: dict[str, Any],
+    target_line: dict[str, Any],
+) -> str:
+    code = supplier_code or "(sin código)"
+    fields = [f.get("field") for f in mismatch_fields if f.get("field")]
+    unique = list(dict.fromkeys(fields))
+    if unique == ["quantity"]:
+        return (
+            f"Diferencia de cantidad en la referencia {code}: "
+            f"pedido {_format_number(origin_line.get('quantity'))} unidades, "
+            f"confirmación {_format_number(target_line.get('quantity'))} unidades."
+        )
+    if unique == ["unit_price"]:
+        return (
+            f"Diferencia de precio unitario en la referencia {code}: "
+            f"pedido {_format_number(origin_line.get('unit_price'))}, "
+            f"confirmación {_format_number(target_line.get('unit_price'))}."
+        )
+    if unique == ["discount"]:
+        return (
+            f"Diferencia de descuento en la referencia {code}: "
+            f"pedido {_format_number(origin_line.get('discount'))}%, "
+            f"confirmación {_format_number(target_line.get('discount'))}%."
+        )
+    if unique == ["line_total"]:
+        return (
+            f"Diferencia de importe en la referencia {code}: "
+            f"pedido {_format_number(origin_line.get('line_total'))}, "
+            f"confirmación {_format_number(target_line.get('line_total'))}."
+        )
+
+    labels = {
+        "quantity": "cantidad",
+        "unit_price": "precio unitario",
+        "discount": "descuento",
+        "line_total": "importe",
+    }
+    readable = [labels.get(field, field) for field in unique]
+    return f"Diferencias en {', '.join(readable)} para la referencia {code}."
+
+
+def _format_number(value: Any) -> str:
+    if value is None:
+        return "N/D"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(num - round(num)) < 1e-9:
+        text = str(int(round(num)))
+    else:
+        text = f"{num:.4f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
 def _export_compare_excel(
     *,
     output_path: str,
@@ -224,6 +293,7 @@ def _export_compare_excel(
     ok_rows: list[dict[str, Any]],
     incidents: list[dict[str, Any]],
     unmatched_rows: list[dict[str, Any]],
+    overall_status: str,
 ) -> None:
     wb = Workbook()
     header_fill = PatternFill("solid", fgColor="1F4E79")
@@ -234,13 +304,14 @@ def _export_compare_excel(
     summary_rows = [
         ("job_id", job_id),
         ("module", module),
-        ("supplier", supplier or ""),
-        ("origin_document_type", origin_document_type),
-        ("target_document_type", target_document_type),
-        ("lines_origin", origin_count),
-        ("lines_target", target_count),
-        ("lines_ok", len(ok_rows)),
-        ("incidents_total", len(incidents)),
+        ("proveedor", supplier or ""),
+        ("documento_origen", origin_document_type),
+        ("documento_destino", target_document_type),
+        ("lineas_origen", origin_count),
+        ("lineas_destino", target_count),
+        ("lineas_ok", len(ok_rows)),
+        ("incidencias_totales", len(incidents)),
+        ("estado_global", overall_status),
         ("generated_at_utc", datetime.utcnow().isoformat()),
     ]
     for i, (k, v) in enumerate(summary_rows, start=1):
@@ -369,4 +440,3 @@ def _auto_width(ws) -> None:
             value = "" if cell.value is None else str(cell.value)
             max_len = max(max_len, len(value))
         ws.column_dimensions[get_column_letter(i)].width = min(48, max(12, max_len + 2))
-

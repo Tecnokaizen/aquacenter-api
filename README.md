@@ -5,6 +5,8 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
 ## Endpoints
 
 - `GET /health`
+- `GET /healthz`
+- `GET /version`
 - `POST /extract` (`multipart/form-data`)
   - `file`: `.pdf`, `.xlsx`, `.xls`, `.csv`, `.eml`
   - `module`: `confirmacion_pedidos` | `revision_facturas` | `actualizacion_tarifas`
@@ -18,11 +20,14 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
 
 ## Seguridad
 
-`POST /extract` exige cabecera:
+`POST /extract` y `POST /compare` exigen cabecera:
 
 `Authorization: Bearer <API_KEY>`
 
 En Swagger (`/docs`), usa el botón `Authorize` para introducir el token Bearer.
+
+Nota de compatibilidad n8n:
+- Para PDFs, la API acepta `application/pdf` y también `application/octet-stream` si el nombre de archivo termina en `.pdf`.
 
 ## Variables de entorno
 
@@ -93,8 +98,10 @@ También devuelve:
 
 Para `/compare` la respuesta incluye:
 - `success`, `job_id`
+- `overall_status` (`ok` | `with_incidents` | `failed`)
 - `origin_document_type`, `target_document_type`
 - `supplier`
 - `lines_origin`, `lines_target`, `lines_ok`
 - `incidents_total`, `incidents`
 - `output_excel`
+- `output_excel_url` (URL absoluta)
