@@ -16,11 +16,16 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
   - `target_file`: PDF confirmación proveedor
   - `module`: `confirmacion_pedidos`
   - `use_ai`: `true/false` (MVP recomendado `false`)
+- `POST /compare-batch` (`multipart/form-data`)
+  - `files[]`: múltiples PDFs (pedidos y confirmaciones mezclados)
+  - `module`: `confirmacion_pedidos`
+  - `use_ai`: `true/false`
+- `GET /ui/compare` interfaz web mínima para comparación manual
 - `GET /outputs/{file_name}` descarga Excel de salida
 
 ## Seguridad
 
-`POST /extract` y `POST /compare` exigen cabecera:
+`POST /extract`, `POST /compare` y `POST /compare-batch` exigen cabecera:
 
 `Authorization: Bearer <API_KEY>`
 
@@ -28,6 +33,7 @@ En Swagger (`/docs`), usa el botón `Authorize` para introducir el token Bearer.
 
 Nota de compatibilidad n8n:
 - Para PDFs, la API acepta `application/pdf` y también `application/octet-stream` si el nombre de archivo termina en `.pdf`.
+- La UI `/ui/compare` está pensada para entorno interno.
 
 ## Variables de entorno
 
@@ -105,3 +111,14 @@ Para `/compare` la respuesta incluye:
 - `incidents_total`, `incidents`
 - `output_excel`
 - `output_excel_url` (URL absoluta)
+
+Para `/compare-batch` la respuesta incluye:
+- `batch_id`
+- `documents_total`
+- `pairs_detected`
+- `comparisons_ok`
+- `comparisons_with_incidents`
+- `unmatched_documents`
+- `incidents_total`
+- `batch_excel`
+- `batch_excel_url`
