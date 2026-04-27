@@ -9,6 +9,11 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
   - `file`: `.pdf`, `.xlsx`, `.xls`, `.csv`, `.eml`
   - `module`: `confirmacion_pedidos` | `revision_facturas` | `actualizacion_tarifas`
   - `use_ai`: `true/false`
+- `POST /compare` (`multipart/form-data`)
+  - `origin_file`: PDF pedido original
+  - `target_file`: PDF confirmación proveedor
+  - `module`: `confirmacion_pedidos`
+  - `use_ai`: `true/false` (MVP recomendado `false`)
 - `GET /outputs/{file_name}` descarga Excel de salida
 
 ## Seguridad
@@ -16,6 +21,8 @@ API FastAPI lista para desplegar en EasyPanel con Docker, volumen persistente y 
 `POST /extract` exige cabecera:
 
 `Authorization: Bearer <API_KEY>`
+
+En Swagger (`/docs`), usa el botón `Authorize` para introducir el token Bearer.
 
 ## Variables de entorno
 
@@ -79,3 +86,15 @@ Nodo HTTP Request:
   - `use_ai` (`false` para MVP)
 
 Respuesta JSON incluye `output_excel` con ruta descargable (`/outputs/...`).
+También devuelve:
+- `extraction_method`
+- `confidence`
+- `output_excel_url` (URL absoluta)
+
+Para `/compare` la respuesta incluye:
+- `success`, `job_id`
+- `origin_document_type`, `target_document_type`
+- `supplier`
+- `lines_origin`, `lines_target`, `lines_ok`
+- `incidents_total`, `incidents`
+- `output_excel`

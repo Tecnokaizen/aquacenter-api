@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import asyncio
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
+from app.core.security import require_bearer_auth
 from app.services.email_extractor import extract_email_document
 from app.services.excel_extractor import extract_table_document
 from app.services.excel_reporter import exportar_excel_extraccion
 from app.services.pdf_extractor import OpenAINotConfiguredError, extract_pdf_document
+from app.services.supplier_cleaner import clean_supplier_name
 
 router = APIRouter()
 logger = logging.getLogger("aquacenter.api.extract")
@@ -28,12 +30,12 @@ ALLOWED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".csv", ".eml"}
 
 @router.post("/extract")
 async def extract(
+    request: Request,
     file: UploadFile = File(...),
     module: str = Form(...),
     use_ai: bool = Form(False),
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = Depends(require_bearer_auth),
 ) -> dict:
-    _assert_bearer_auth(authorization)
     _assert_module(module)
 
     job_id = f"job_{uuid.uuid4().hex[:10]}"
@@ -59,9 +61,8 @@ async def extract(
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     upload_path.write_bytes(content)
 
-    warnings: list[str] = []
     try:
-        data, warnings = await asyncio.wait_for(
+        data, warnings, extraction_method, confidence = await asyncio.wait_for(
             asyncio.to_thread(_dispatch_extract, str(upload_path), suffix, use_ai),
             timeout=settings.request_timeout_seconds,
         )
@@ -85,8 +86,12 @@ async def extract(
     )
 
     doc_type = data.get("tipo", "desconocido")
-    supplier = (data.get("cabecera") or {}).get("proveedor_nombre")
+    supplier = clean_supplier_name((data.get("cabecera") or {}).get("proveedor_nombre"))
+    if supplier and isinstance(data.get("cabecera"), dict):
+        data["cabecera"]["proveedor_nombre"] = supplier
     lines_count = len(data.get("lineas", []) or [])
+    output_excel_rel = f"/outputs/{output_name}"
+    output_excel_url = str(request.base_url).rstrip("/") + output_excel_rel
 
     _log(
         "extract_completed",
@@ -96,6 +101,8 @@ async def extract(
         document_type=doc_type,
         supplier=supplier,
         lines_count=lines_count,
+        extraction_method=extraction_method,
+        confidence=confidence,
     )
 
     return {
@@ -103,8 +110,11 @@ async def extract(
         "job_id": job_id,
         "document_type": doc_type,
         "supplier": supplier,
+        "extraction_method": extraction_method,
+        "confidence": confidence,
         "lines_count": lines_count,
-        "output_excel": f"/outputs/{output_name}",
+        "output_excel": output_excel_rel,
+        "output_excel_url": output_excel_url,
         "warnings": warnings,
     }
 
@@ -124,16 +134,6 @@ def download_output(file_name: str) -> FileResponse:
     )
 
 
-def _assert_bearer_auth(authorization: str | None) -> None:
-    if not settings.api_key:
-        raise HTTPException(status_code=503, detail="API_KEY no configurada en entorno.")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authorization Bearer requerido.")
-    token = authorization.split(" ", 1)[1].strip()
-    if token != settings.api_key:
-        raise HTTPException(status_code=401, detail="API key inválida.")
-
-
 def _assert_module(module: str) -> None:
     if module not in ALLOWED_MODULES:
         raise HTTPException(
@@ -147,7 +147,10 @@ def _assert_pdf_content_type(file: UploadFile) -> None:
     if content_type not in {"application/pdf", "application/x-pdf"}:
         raise HTTPException(
             status_code=400,
-            detail=f"El fichero PDF debe enviarse con content-type application/pdf, recibido: {content_type or '(vacío)'}",
+            detail=(
+                "El fichero PDF debe enviarse con content-type application/pdf, "
+                f"recibido: {content_type or '(vacío)'}"
+            ),
         )
 
 
@@ -155,22 +158,37 @@ def _safe_name(name: str) -> str:
     return Path(name).name.replace("/", "_").replace("\\", "_")
 
 
-def _dispatch_extract(path: str, suffix: str, use_ai: bool) -> tuple[dict, list[str]]:
+def _dispatch_extract(path: str, suffix: str, use_ai: bool) -> tuple[dict, list[str], str, float]:
     warnings: list[str] = []
     if suffix == ".pdf":
         data, warnings = extract_pdf_document(path, use_ai=use_ai)
-        return data, warnings
+        extraction_method = "openai_fallback" if "fallback_openai_usado" in warnings else "local_parser"
+        return data, warnings, extraction_method, _estimate_confidence(extraction_method, data)
     if suffix in {".xlsx", ".xls", ".csv"}:
         data = extract_table_document(path)
         if use_ai:
             warnings.append("use_ai_ignorado_para_tabular")
-        return data, warnings
+        extraction_method = "tabular_parser"
+        return data, warnings, extraction_method, _estimate_confidence(extraction_method, data)
     if suffix == ".eml":
         data = extract_email_document(path)
         if use_ai:
             warnings.append("use_ai_ignorado_para_email")
-        return data, warnings
+        extraction_method = "email_parser"
+        return data, warnings, extraction_method, _estimate_confidence(extraction_method, data)
     raise ValueError(f"Formato no soportado: {suffix}")
+
+
+def _estimate_confidence(extraction_method: str, data: dict) -> float:
+    lines_count = len(data.get("lineas", []) or [])
+    if extraction_method == "tabular_parser":
+        return 0.99 if lines_count > 0 else 0.6
+    if extraction_method == "email_parser":
+        return 0.9 if lines_count > 0 else 0.75
+    if extraction_method == "openai_fallback":
+        return 0.86 if lines_count > 0 else 0.55
+    # local_parser
+    return 0.96 if lines_count > 0 else 0.5
 
 
 def _log(event: str, **fields: object) -> None:

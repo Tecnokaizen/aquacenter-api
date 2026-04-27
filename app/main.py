@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.core.config import ensure_runtime_dirs, settings
+from app.routers.compare import router as compare_router
 from app.routers.extract import router as extract_router
 from app.routers.health import router as health_router
 
@@ -35,4 +36,4 @@ _configure_logging()
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.include_router(health_router)
 app.include_router(extract_router)
-
+app.include_router(compare_router)
